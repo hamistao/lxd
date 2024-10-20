@@ -3447,10 +3447,32 @@ func (n *bridge) Leases(projectName string, clientType request.ClientType) ([]ap
 	instanceProjects := make(map[string]string)
 	leases := []api.NetworkLease{}
 
+	var project *api.Project
+
+	// Only query for project when we need to check for "features.networks". That is, when the network project is
+	// the default project and projectName refers to any one other project.
+	if projectName != api.ProjectDefaultName && projectName != "" && n.project == api.ProjectDefaultName {
+		err := n.state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
+			dbProject, err := dbCluster.GetProject(ctx, tx.Tx(), projectName)
+			if err != nil {
+				return err
+			}
+
+			project, err = dbProject.ToAPI(ctx, tx.Tx())
+
+			return err
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	// Get all static leases.
 	if clientType == request.ClientTypeNormal {
-		// If requested project matches network's project then include gateway and downstream uplink IPs.
-		if projectName == n.project || projectName == "" {
+		// Include gateway IPs when the network belongs to requested project, getting leases for all projects or
+		// requested project doesn't have features.networks and network is in default project.
+		if projectName == n.project || projectName == "" ||
+			(project != nil && shared.IsFalseOrEmpty(project.Config["features.networks"])) {
 			// Add our own gateway IPs.
 			for _, addr := range []string{n.config["ipv4.address"], n.config["ipv6.address"]} {
 				ip, _, _ := net.ParseCIDR(addr)
