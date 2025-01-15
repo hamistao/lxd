@@ -6283,7 +6283,7 @@ func volumeStorageName(projectName string, volName string, volType drivers.Volum
 		return project.StorageVolume(projectName, volName), nil
 	}
 
-	if volType == drivers.VolumeTypeVM || volType == drivers.VolumeTypeContainer {
+	if volType.IsInstance() {
 		return project.Instance(projectName, volName), nil
 	}
 
@@ -7016,7 +7016,7 @@ func (b *lxdBackend) ListUnknownVolumes(op *operations.Operation) (map[string][]
 			return nil, fmt.Errorf("Storage driver returned unexpected VM volume with filesystem content type (%q)", poolVol.Name())
 		}
 
-		if volType == drivers.VolumeTypeVM || volType == drivers.VolumeTypeContainer {
+		if volType.IsInstance() {
 			err = b.detectUnknownInstanceVolume(&poolVol, projectVols, op)
 			if err != nil {
 				return nil, err
