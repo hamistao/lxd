@@ -2217,6 +2217,12 @@ func (b *lxdBackend) CreateInstanceFromMigration(inst instance.Instance, conn io
 	revert := revert.New()
 	defer revert.Fail()
 
+	// Generate the effective root device volume for instance.
+	err = b.applyInstanceRootDiskOverrides(inst, &vol)
+	if err != nil {
+		return err
+	}
+
 	if !args.Refresh {
 		if volExists {
 			if !isRemoteClusterMove {
@@ -2277,12 +2283,6 @@ func (b *lxdBackend) CreateInstanceFromMigration(inst instance.Instance, conn io
 
 			revert.Add(func() { _ = VolumeDBDelete(b, inst.Project().Name, newSnapshotName, volType) })
 		}
-	}
-
-	// Generate the effective root device volume for instance.
-	err = b.applyInstanceRootDiskOverrides(inst, &vol)
-	if err != nil {
-		return err
 	}
 
 	// Override args.Name and args.Config to ensure volume is created based on instance.
