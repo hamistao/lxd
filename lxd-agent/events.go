@@ -151,6 +151,13 @@ func eventsProcess(event api.Event) {
 		mntSource = e.Mount.Source
 	}
 
+	// Parse mount options, if provided.
+	var args []string
+	if len(e.Mount.Options) > 0 {
+		args = append(args, "-o")
+		args = append(args, strings.Join(e.Mount.Options, ","))
+	}
+
 	l := logger.AddContext(logger.Ctx{"type": "virtiofs", "source": mntSource, "path": e.Config["path"]})
 	// If the path is not absolute, the mount will be created at `/run/lxd_agent/<path>`
 	// (since the mount command executed below originates from the `lxd-agent` binary that is in the `/run/lxd_agent` directory).
@@ -161,8 +168,10 @@ func eventsProcess(event api.Event) {
 
 	_ = os.MkdirAll(e.Config["path"], 0755)
 
+	args = append(args, "-t", "virtiofs", mntSource, e.Config["path"])
+
 	for i := 0; i < 5; i++ {
-		_, err = shared.RunCommand("mount", "-t", "virtiofs", mntSource, e.Config["path"])
+		_, err = shared.RunCommand("mount", args...)
 		if err == nil {
 			l.Info("Mounted hotplug")
 			return
