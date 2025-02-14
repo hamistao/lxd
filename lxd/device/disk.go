@@ -2597,11 +2597,21 @@ func (d *disk) generateVMConfigDrive() (string, error) {
 		}
 	}
 
-	// Append any custom meta-data to our predefined meta-data config.
+	reservedUserKeys := []string{"user.network-config", "user.user-data", "user.vendor-data", "user.meta-data"}
+
 	metaData := fmt.Sprintf(`instance-id: %s
-local-hostname: %s
-%s
-`, d.inst.Name(), d.inst.Name(), instanceConfig["user.meta-data"])
+	local-hostname: %s
+`, d.inst.Name(), d.inst.Name())
+
+	// Add other user.* keys to meta-data so that cloud-init has access to this information.
+	for key, value := range instanceConfig {
+		if strings.HasPrefix(key, "user.") && !shared.ValueInSlice(key, reservedUserKeys) {
+			metaData += key + ": " + value + "\n"
+		}
+	}
+
+	// Append any custom meta-data.
+	metaData += instanceConfig["user.meta-data"]
 
 	err = os.WriteFile(filepath.Join(scratchDir, "meta-data"), []byte(metaData), 0400)
 	if err != nil {
