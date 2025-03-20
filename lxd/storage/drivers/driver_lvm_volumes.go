@@ -1169,13 +1169,22 @@ func (d *lvm) UnmountVolumeSnapshot(snapVol Volume, op *operations.Operation) (b
 
 	refCount := snapVol.MountRefCountDecrement()
 
+	// For VMs, unmount the filesystem volume.
+	if snapVol.IsVMBlock() {
+		fsVol := snapVol.NewVMBlockFilesystemVolume()
+		ourUnmount, err = d.UnmountVolumeSnapshot(fsVol, op)
+		if err != nil {
+			return false, err
+		}
+	}
+
+	if refCount > 0 {
+		d.logger.Debug("Skipping unmount as in use", logger.Ctx{"volName": snapVol.name, "refCount": refCount})
+		return false, ErrInUse
+	}
+
 	// Check if already mounted.
 	if snapVol.contentType == ContentTypeFS && filesystem.IsMountPoint(mountPath) {
-		if refCount > 0 {
-			d.logger.Debug("Skipping unmount as in use", logger.Ctx{"volName": snapVol.name, "refCount": refCount})
-			return false, ErrInUse
-		}
-
 		err = TryUnmount(mountPath, 0)
 		if err != nil {
 			return false, fmt.Errorf("Failed to unmount LVM snapshot volume: %w", err)
@@ -1198,37 +1207,23 @@ func (d *lvm) UnmountVolumeSnapshot(snapVol Volume, op *operations.Operation) (b
 			}
 		}
 
-		// We only deactivate filesystem volumes if an unmount was needed to better align with our
-		// unmount return value indicator.
-		_, err = d.deactivateVolume(snapVol)
-		if err != nil {
-			return false, err
-		}
-
 		ourUnmount = true
 	} else if snapVol.contentType == ContentTypeBlock {
-		// For VMs, unmount the filesystem volume.
-		if snapVol.IsVMBlock() {
-			fsVol := snapVol.NewVMBlockFilesystemVolume()
-			ourUnmount, err = d.UnmountVolumeSnapshot(fsVol, op)
-			if err != nil {
-				return false, err
-			}
-		}
-
 		volDevPath := d.lvmDevPath(d.config["lvm.vg_name"], snapVol.volType, snapVol.contentType, snapVol.name)
 		if shared.PathExists(volDevPath) {
 			if refCount > 0 {
 				d.logger.Debug("Skipping unmount as in use", logger.Ctx{"volName": snapVol.name, "refCount": refCount})
 				return false, ErrInUse
 			}
+		}
+	}
 
-			_, err = d.deactivateVolume(snapVol)
-			if err != nil {
-				return false, err
-			}
-
-			ourUnmount = true
+	// We only deactivate filesystem volumes if an unmount was needed to better align with our
+	// unmount return value indicator.
+	if ourUnmount {
+		_, err = d.deactivateVolume(snapVol)
+		if err != nil {
+			return false, err
 		}
 	}
 
