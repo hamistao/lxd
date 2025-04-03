@@ -90,10 +90,10 @@ type Pool interface {
 	UnmountInstance(inst instance.Instance, op *operations.Operation) error
 
 	// Instance snapshots.
-	CreateInstanceSnapshot(inst instance.Instance, src instance.Instance, op *operations.Operation) error
+	CreateInstanceSnapshot(inst instance.Instance, src instance.Instance, volumes instance.SnapshotVolumes, op *operations.Operation) error
 	RenameInstanceSnapshot(inst instance.Instance, newName string, op *operations.Operation) error
 	DeleteInstanceSnapshot(inst instance.Instance, op *operations.Operation) error
-	RestoreInstanceSnapshot(inst instance.Instance, src instance.Instance, op *operations.Operation) error
+	RestoreInstanceSnapshot(inst instance.Instance, src instance.Instance, volumes instance.RestoreVolumes, op *operations.Operation) error
 	MountInstanceSnapshot(inst instance.Instance, op *operations.Operation) (*MountInfo, error)
 	UnmountInstanceSnapshot(inst instance.Instance, op *operations.Operation) error
 	UpdateInstanceSnapshot(inst instance.Instance, newDesc string, newConfig map[string]string, op *operations.Operation) error
