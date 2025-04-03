@@ -145,8 +145,8 @@ type Instance interface {
 	IsPrivileged() bool
 
 	// Snapshots & migration & backups.
-	Restore(source Instance, stateful bool) error
-	Snapshot(name string, expiry time.Time, stateful bool) error
+	Restore(source Instance, stateful bool, volumes RestoreVolumes) error
+	Snapshot(name string, expiry time.Time, stateful bool, volumes SnapshotVolumes) error
 	Snapshots() ([]Instance, error)
 	Backups() ([]backup.InstanceBackup, error)
 	UpdateBackupFile() error
