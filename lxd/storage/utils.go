@@ -650,6 +650,16 @@ func validateVolumeCommonRules(vol drivers.Volume) map[string]func(string) error
 		rules["volatile.idmap.next"] = validate.IsAny
 	}
 
+	// lxdmeta:generate(entities=storage-btrfs,storage-cephfs,storage-ceph,storage-dir,storage-lvm,storage-zfs,storage-powerflex; group=volume-conf; key=volatile.attached_volumes)
+	//
+	// ---
+	//   type: string
+	//   shortdesc: Comma-separated list of UUIDs for attached volume snapshots created as part of a multi-volume snapshot.
+	//   condition: virtual-machine snapshot or container snapshot
+	if vol.Type().IsInstance() && vol.IsSnapshot() {
+		rules["volatile.attached_volumes"] = validate.Optional(validate.IsListOf(validate.IsUUID))
+	}
+
 	// block.mount_options and block.filesystem settings are only relevant for drivers that are block backed
 	// and when there is a filesystem to actually mount. This includes filesystem volumes and VM Block volumes,
 	// as they have an associated config filesystem volume that shares the config.
