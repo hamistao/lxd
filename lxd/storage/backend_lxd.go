@@ -3545,6 +3545,66 @@ func (b *lxdBackend) getInstanceDisk(inst instance.Instance) (string, error) {
 	return diskPath, nil
 }
 
+// The volumeKey type is used to identify a volume on a map for filterSharedVolume to efficiently check if
+// each volume on a list is being shared.
+// If the volume under the key is a snapshot, volumeName should be its parent's name so filterSharedVolume
+// can check if the parent is being shared.
+type volumeKey struct {
+	pool       string
+	volumeName string
+}
+
+// filterSharedVolumes filters shared volumes from a map of volumes, each volume can be only attached to inst.
+// For each snapshot on original, check if its parent is being shared instead.
+// If removeShared is true, shared volumes are removed from the map in place
+// else, this returns an error upon finding a shared volume.
+func (b *lxdBackend) filterSharedVolumes(ctx context.Context, tx *db.ClusterTx, original map[volumeKey]*api.StorageVolume, inst instance.Instance, removeShared bool) error {
+	instanceProject := inst.Project()
+	effectiveProject := project.StorageVolumeProjectFromRecord(&instanceProject, cluster.StoragePoolVolumeTypeCustom)
+
+	// Return early if an empty map was provided.
+	if len(original) == 0 {
+		return nil
+	}
+
+	err := tx.InstanceList(ctx, func(listedInstance db.InstanceArgs, p api.Project) error {
+		// Ignore the provided instance.
+		if instanceProject.Name == listedInstance.Project && inst.Name() == listedInstance.Name {
+			return nil
+		}
+
+		// Ignore instances with a different effective project for volumes.
+		if effectiveProject != project.StorageVolumeProjectFromRecord(&p, cluster.StoragePoolVolumeTypeCustom) {
+			return nil
+		}
+
+		expandedDevices := instancetype.ExpandInstanceDevices(listedInstance.Devices, listedInstance.Profiles)
+
+		// Iterate through each of the instance's devices, looking for disks sourced by volumes attached to inst.
+		for _, dev := range expandedDevices {
+			key := volumeKey{dev["pool"], dev["source"]}
+
+			vol, usesVol := original[volumeKey{dev["pool"], dev["source"]}]
+
+			if !usesVol {
+				continue
+			}
+
+			if !removeShared {
+				// If shared volumes are not allowed, return an error.
+				return fmt.Errorf("Volume %s is being shared with %s", vol.Name, listedInstance.Name)
+			}
+
+			// Delete the shared volume from the map and move on.
+			delete(original, key)
+		}
+
+		return nil
+	})
+
+	return err
+}
+
 // CreateInstanceSnapshot creates a snaphot of an instance volume.
 func (b *lxdBackend) CreateInstanceSnapshot(inst instance.Instance, src instance.Instance, op *operations.Operation) error {
 	l := b.logger.AddContext(logger.Ctx{"project": inst.Project().Name, "instance": inst.Name(), "src": src.Name()})
