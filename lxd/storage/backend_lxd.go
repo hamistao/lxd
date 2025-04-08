@@ -3669,6 +3669,56 @@ func (b *lxdBackend) attachedExclusiveCustomVolumes(inst instance.Instance, skip
 	return targetVolumes, nil
 }
 
+// exclusiveVolumeSnapshotsFromUUID returns a list of api.StorageVolume's objects from a list of UUIDs.
+// The parent volumes for the snapshots on the list must not be attached to any instance that not the
+// one provided as an argument.
+func (b *lxdBackend) exclusiveVolumeSnapshotsFromUUID(uuidList []string, inst instance.Instance, skipMissing bool) (map[volumeKey]*api.StorageVolume, error) {
+	instanceProject := inst.Project()
+
+	// Get the instance's effective project for volumes.
+	// Create a variables so we can point to them.
+	customType := cluster.StoragePoolVolumeTypeCustom
+	effectiveProject := project.StorageVolumeProjectFromRecord(&instanceProject, cluster.StoragePoolVolumeTypeCustom)
+	filter := db.StorageVolumeFilter{
+		Type:    &customType,
+		Project: &effectiveProject,
+	}
+
+	targetSnapshots := make(map[volumeKey]*api.StorageVolume)
+
+	err := b.state.DB.Cluster.Transaction(b.state.ShutdownCtx, func(ctx context.Context, tx *db.ClusterTx) error {
+		accessibleVolumes, err := tx.GetStorageVolumes(ctx, true, filter)
+		if err != nil {
+			return err
+		}
+
+		for _, volume := range accessibleVolumes {
+			if shared.ValueInSlice(volume.Config["volatile.uuid"], uuidList) {
+				parentName, _, isSnapshot := api.GetParentAndSnapshotName(volume.Name)
+				if !isSnapshot {
+					return fmt.Errorf("Volume with uuid %s is not a snapshot", volume.Config["volatile.uuid"])
+				}
+
+				// Key the snapshot volume using its parent's name so filterSharedVolumes can check if the parent
+				// is being shared.
+				targetSnapshots[volumeKey{volume.Pool, parentName}] = &volume.StorageVolume
+			}
+		}
+
+		// Check if attached volumes are being used by an instance other than inst.
+		return b.filterSharedVolumes(ctx, tx, targetSnapshots, inst, false)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if !skipMissing && len(targetSnapshots) < len(uuidList) {
+		return nil, errors.New("Missing attached volume snapshot")
+	}
+
+	return targetSnapshots, nil
+}
+
 // CreateInstanceSnapshot creates a snaphot of an instance volume.
 // The volumes argument allows for also snapshotting volumes attached to the instance.
 func (b *lxdBackend) CreateInstanceSnapshot(inst instance.Instance, src instance.Instance, volumes instance.SnapshotVolumes, op *operations.Operation) error {
