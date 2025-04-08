@@ -3670,7 +3670,8 @@ func (b *lxdBackend) attachedExclusiveCustomVolumes(inst instance.Instance, skip
 }
 
 // CreateInstanceSnapshot creates a snaphot of an instance volume.
-func (b *lxdBackend) CreateInstanceSnapshot(inst instance.Instance, src instance.Instance, op *operations.Operation) error {
+// The volumes argument allows for also snapshotting volumes attached to the instance.
+func (b *lxdBackend) CreateInstanceSnapshot(inst instance.Instance, src instance.Instance, volumes instance.SnapshotVolumes, op *operations.Operation) error {
 	l := b.logger.AddContext(logger.Ctx{"project": inst.Project().Name, "instance": inst.Name(), "src": src.Name()})
 	l.Debug("CreateInstanceSnapshot started")
 	defer l.Debug("CreateInstanceSnapshot finished")
@@ -3717,6 +3718,34 @@ func (b *lxdBackend) CreateInstanceSnapshot(inst instance.Instance, src instance
 	revert := revert.New()
 	defer revert.Fail()
 
+	var targetVolumes map[volumeKey]*api.StorageVolume
+
+	if volumes != instance.SnapshotVolumesRoot {
+		// Select attached volumes to be snapshotted as part of a multi volume snapshot.
+		targetVolumes, err = b.attachedExclusiveCustomVolumes(src, volumes == instance.SnapshotVolumesExclusive)
+		if err != nil {
+			return err
+		}
+
+		// Keep track of attached volume snapshots through volatile.attached_volumes.
+		var attachedVolumesUUIDs strings.Builder
+
+		// Assign uuids to the volumes early and reference them through volatile.attached_volumes.
+		first := true
+		for _, volume := range targetVolumes {
+			volume.Config["volatile.uuid"] = uuid.NewString()
+
+			if !first {
+				attachedVolumesUUIDs.WriteString(",")
+			}
+
+			attachedVolumesUUIDs.WriteString(volume.Config["volatile.uuid"])
+			first = false
+		}
+
+		vol.Config()["volatile.attached_volumes"] = attachedVolumesUUIDs.String()
+	}
+
 	// Lock this operation to ensure that the only one snapshot is made at the time.
 	// Other operations will wait for this one to finish.
 	unlock, err := locking.Lock(context.TODO(), drivers.OperationLockName("CreateInstanceSnapshot", b.name, vol.Type(), contentType, src.Name()))
@@ -3735,7 +3764,8 @@ func (b *lxdBackend) CreateInstanceSnapshot(inst instance.Instance, src instance
 	revert.Add(func() { _ = VolumeDBDelete(b, inst.Project().Name, inst.Name(), volType) })
 
 	// Some driver backing stores require that running instances be frozen during snapshot.
-	if b.driver.Info().RunningCopyFreeze && src.IsRunning() && !src.IsFrozen() {
+	// Also freeze if performing a multi volume snapshot.
+	if (src.IsRunning() && !src.IsFrozen()) && (volumes != instance.SnapshotVolumesRoot || b.driver.Info().RunningCopyFreeze) {
 		// Freeze the processes.
 		err = src.Freeze()
 		if err != nil {
@@ -3756,6 +3786,25 @@ func (b *lxdBackend) CreateInstanceSnapshot(inst instance.Instance, src instance
 	err = b.ensureInstanceSnapshotSymlink(inst.Type(), inst.Project().Name, inst.Name())
 	if err != nil {
 		return err
+	}
+
+	// Snapshot attached volumes.
+	// TODO: Improve this by implementing concurrency.
+	for _, volume := range targetVolumes {
+		// Use shutdown context here as we don't have access to the request context.
+		snapshotName, err := VolumeDetermineNextSnapshotName(b.state.ShutdownCtx, b.state, volume.Pool, volume.Name, volume.Config)
+		if err != nil {
+			return err
+		}
+
+		// Add a description to easily identify attached volume snapshots.
+		description := "Attached volume snapshot for " + inst.Type().String() + "/" + inst.Name() + " on project " + inst.Project().Name
+
+		// Attached volume snapshots inherid expiration time from instance snapshot.
+		err = b.CreateCustomVolumeSnapshot(volume.Project, volume.Name, snapshotName, description, volume.Config["volatile.uuid"], inst.ExpiryDate(), op)
+		if err != nil {
+			return err
+		}
 	}
 
 	revert.Success()
