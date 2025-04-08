@@ -4025,7 +4025,7 @@ func (b *lxdBackend) DeleteInstanceSnapshot(inst instance.Instance, op *operatio
 }
 
 // RestoreInstanceSnapshot restores an instance snapshot.
-func (b *lxdBackend) RestoreInstanceSnapshot(inst instance.Instance, src instance.Instance, op *operations.Operation) error {
+func (b *lxdBackend) RestoreInstanceSnapshot(inst instance.Instance, src instance.Instance, volumes instance.RestoreVolumes, op *operations.Operation) error {
 	l := b.logger.AddContext(logger.Ctx{"project": inst.Project().Name, "instance": inst.Name(), "src": src.Name()})
 	l.Debug("RestoreInstanceSnapshot started")
 	defer l.Debug("RestoreInstanceSnapshot finished")
@@ -4081,6 +4081,28 @@ func (b *lxdBackend) RestoreInstanceSnapshot(inst instance.Instance, src instanc
 	if err != nil {
 		return err
 	}
+
+	var targetSnapshots map[volumeKey]*api.StorageVolume
+
+	// If performing a multi volume restore, get the snapshots used to restore attached volumes.
+	if volumes != instance.RestoreVolumesRoot {
+		// Snapshots for attached volumes should be referenced by their UUIDs in volatile.attached_volumes.
+		rawAttachedVolumes, hasAttachedVolumes := srcDBVol.Config["volatile.attached_volumes"]
+		if !hasAttachedVolumes {
+			return errors.New(`Cannot restore attached volumes as "volatile.attached_volumes" is unset`)
+		}
+
+		attachedVolumesUUIDs := shared.SplitNTrimSpace(rawAttachedVolumes, ",", -1, false)
+
+		// Ignore unavailable snapshots if volumes=available.
+		targetSnapshots, err = b.exclusiveVolumeSnapshotsFromUUID(attachedVolumesUUIDs, inst, volumes == instance.RestoreVolumesAvailable)
+		if err != nil {
+			return err
+		}
+	}
+
+	// volatile.attached_volumes should not enter the instance config.
+	delete(srcDBVol.Config, "volatile.attached_volumes")
 
 	// Restore snapshot volume config if different.
 	changedConfig, _ := b.detectChangedConfig(dbVol.Config, srcDBVol.Config)
@@ -4158,6 +4180,17 @@ func (b *lxdBackend) RestoreInstanceSnapshot(inst instance.Instance, src instanc
 		}
 
 		return err
+	}
+
+	// Restore each of the attached volumes.
+	// TODO: Improve this by implementing concurrency.
+	for _, volume := range targetSnapshots {
+		volumeName, snapshotName, _ := api.GetParentAndSnapshotName(volume.Name)
+
+		err := b.RestoreCustomVolume(volume.Project, volumeName, snapshotName, op)
+		if err != nil {
+			return err
+		}
 	}
 
 	revert.Success()
