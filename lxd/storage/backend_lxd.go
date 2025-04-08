@@ -6493,7 +6493,8 @@ func (b *lxdBackend) ImportCustomVolume(projectName string, poolVol *backupConfi
 }
 
 // CreateCustomVolumeSnapshot creates a snapshot of a custom volume.
-func (b *lxdBackend) CreateCustomVolumeSnapshot(projectName, volName string, newSnapshotName string, newDescription string, newExpiryDate time.Time, op *operations.Operation) error {
+// The newSnapshotUUID argument is optional and a UUID will be generated if an empty string is provided.
+func (b *lxdBackend) CreateCustomVolumeSnapshot(projectName, volName string, newSnapshotName string, newDescription string, newSnapshotUUID string, newExpiryDate time.Time, op *operations.Operation) error {
 	l := b.logger.AddContext(logger.Ctx{"project": projectName, "volName": volName, "newSnapshotName": newSnapshotName, "newDescription": newDescription, "newExpiryDate": newExpiryDate})
 	l.Debug("CreateCustomVolumeSnapshot started")
 	defer l.Debug("CreateCustomVolumeSnapshot finished")
@@ -6545,6 +6546,9 @@ func (b *lxdBackend) CreateCustomVolumeSnapshot(projectName, volName string, new
 	// Get the volume name on storage.
 	volStorageName := project.StorageVolume(projectName, fullSnapshotName)
 	vol := b.GetNewVolume(drivers.VolumeTypeCustom, contentType, volStorageName, parentVol.Config)
+	if newSnapshotUUID != "" {
+		vol.Config()["volatile.uuid"] = newSnapshotUUID
+	}
 
 	// Set the parent volume's UUID.
 	vol.SetParentUUID(parentUUID)
