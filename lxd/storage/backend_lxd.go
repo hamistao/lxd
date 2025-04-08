@@ -3605,6 +3605,70 @@ func (b *lxdBackend) filterSharedVolumes(ctx context.Context, tx *db.ClusterTx, 
 	return err
 }
 
+// attachedExclusiveCustomVolumes returns a list of non-shared custom volumes attached to the provided instance.
+// If skipShared=false, this fails if a shared custom volume is attached, if true, simply ignore it.
+func (b *lxdBackend) attachedExclusiveCustomVolumes(inst instance.Instance, skipShared bool) (map[volumeKey]*api.StorageVolume, error) {
+	instanceProject := inst.Project()
+
+	// Get the instance's effective project for volumes.
+	// Create a variables so we can point to them.
+	customType := cluster.StoragePoolVolumeTypeCustom
+	effectiveProject := project.StorageVolumeProjectFromRecord(&instanceProject, cluster.StoragePoolVolumeTypeCustom)
+	filter := db.StorageVolumeFilter{
+		Type:    &customType,
+		Project: &effectiveProject,
+	}
+
+	targetVolumes := make(map[volumeKey]*api.StorageVolume)
+
+	err := b.state.DB.Cluster.Transaction(b.state.ShutdownCtx, func(ctx context.Context, tx *db.ClusterTx) error {
+		accessibleVolumes, err := tx.GetStorageVolumes(ctx, true, filter)
+		if err != nil {
+			return err
+		}
+
+		// Add all volumes attached to inst to targetVolumes.
+		for _, device := range inst.ExpandedDevices() {
+			// Find StorageVolume object for the volume used as source for this disk, if any.
+			for _, dbVol := range accessibleVolumes {
+				// Snapshotting ISO volumes is not possible, so skip those.
+				if dbVol.ContentType == cluster.StoragePoolVolumeContentTypeNameISO {
+					continue
+				}
+
+				volumeType, err := cluster.StoragePoolVolumeTypeFromName(dbVol.Type)
+				if err != nil {
+					return err
+				}
+
+				// Skip if volume if not from the correct project
+				if effectiveProject != project.StorageVolumeProjectFromRecord(&instanceProject, volumeType) {
+					continue
+				}
+
+				volumeIsUsed, err := volumeIsUsedByDevice(dbVol.StorageVolume, inst.Type(), inst.Name(), device)
+				if err != nil {
+					return err
+				}
+
+				// Check if the volume shares the name with disk source and is in the appropriate project.
+				if volumeIsUsed {
+					targetVolumes[volumeKey{dbVol.Pool, dbVol.Name}] = &dbVol.StorageVolume
+					break
+				}
+			}
+		}
+
+		// Check if attached volumes are being shared.
+		return b.filterSharedVolumes(ctx, tx, targetVolumes, inst, skipShared)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return targetVolumes, nil
+}
+
 // CreateInstanceSnapshot creates a snaphot of an instance volume.
 func (b *lxdBackend) CreateInstanceSnapshot(inst instance.Instance, src instance.Instance, op *operations.Operation) error {
 	l := b.logger.AddContext(logger.Ctx{"project": inst.Project().Name, "instance": inst.Name(), "src": src.Name()})
